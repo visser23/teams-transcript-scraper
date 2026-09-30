@@ -8,25 +8,31 @@ Microsoft only lets the meeting organiser download transcript files — which is
 
 ## How it works
 
-1. Finds your open Microsoft Teams window  
-2. Locates the **Transcript** panel (right-hand side)  
-3. Walks the accessibility tree to extract speaker names, timestamps, and text  
-4. Scrolls through the panel automatically to capture the full transcript  
+1. Finds your open Microsoft Teams window
+2. Locates the **Transcript** panel (right-hand side)
+3. Walks the accessibility tree to extract speaker names, timestamps, and text
+4. Scrolls through the panel automatically to capture the full transcript
 5. Deduplicates entries and saves everything as `.md`
 
 No network requests, no logins, no APIs — it reads what's already on your screen.
 
 ---
 
+
+
 ## Prerequisites
 
 - **Python 3.9+**
 - **Microsoft Teams** open with a meeting transcript visible  
-  (click the `⋯` menu or `Transcript` button during/after a meeting)
+(click the `⋯` menu or `Transcript` button during/after a meeting)
 
 ---
 
+
+
 ## Installation
+
+
 
 ### Windows
 
@@ -43,6 +49,8 @@ python -m venv venv
 pip install -r requirements.txt
 ```
 
+
+
 ### macOS
 
 ```bash
@@ -58,20 +66,26 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
+
+
 #### macOS — Grant Accessibility Permission
 
 The script uses the macOS Accessibility API, so your terminal needs permission:
 
 1. Open **System Settings → Privacy & Security → Accessibility**
-2. Click the **+** button and add your terminal app  
-   (Terminal, iTerm2, Warp, VS Code, etc.)
+2. Click the **+** button and add your terminal app
+  (Terminal, iTerm2, Warp, VS Code, etc.)
 3. Restart the terminal app
 
 The script will remind you if this step is missing.
 
 ---
 
+
+
 ## Usage
+
+
 
 ### 1. Open the transcript in Teams
 
@@ -102,12 +116,33 @@ The script will find the Teams window, scroll through the transcript, and save i
 ✅  Saved 47 entries → transcript_20260930_104400.md
 ```
 
+
+
+### Where the output goes
+
+- By default, output is written to the folder you run the command from.
+- Default filename format: `transcript_YYYYMMDD_HHMMSS.md`
+- Set a custom path with `-o`, for example:
+
+```bash
+python scrape_transcript.py -o ./output/meeting-notes.md
+```
+
+PowerShell equivalent:
+
+```powershell
+python .\scrape_transcript.py -o .\output\meeting-notes.md
+```
+
+
 ### 3. Options
 
-| Flag | Description |
-|------|-------------|
+
+| Flag                       | Description                                                   |
+| -------------------------- | ------------------------------------------------------------- |
 | `-o FILE`, `--output FILE` | Custom output path (default: `transcript_YYYYMMDD_HHMMSS.md`) |
-| `--debug` | Dump the Teams UI tree to the console for troubleshooting |
+| `--debug`                  | Dump the Teams UI tree to the console for troubleshooting     |
+
 
 Examples:
 
@@ -121,6 +156,8 @@ python scrape_transcript.py --debug
 
 ---
 
+
+
 ## Output format
 
 The script produces clean Markdown:
@@ -132,30 +169,35 @@ The script produces clean Markdown:
 
 ---
 
-**O'NEIL, Martin (NHS ENGLAND)** *[0:03]*
+**Steve Hodgson** *[0:03]*
 
 And what are the assumptions around the delays? Because we're not
-contracting. We're going to need ICBs to contract through a mechanism...
+contracting.
 
-**SAMUEL, Richard (NHS ENGLAND)** *[0:27]*
+**Frank Smith** *[0:27]*
 
-Perfect. Thank you. So Matt has pulled together a first cut deck of
-what the pitch might look like...
+Unsure at this point, I'll have the team look into it asap. I think Richard is leading on this.
 ```
 
 ---
 
+
+
 ## Troubleshooting
 
-| Problem | Fix |
-|---------|-----|
-| **"Teams window not found"** | Make sure Teams is running and a meeting window is open (not just the chat/calendar). |
-| **"Transcript panel not detected"** | Click the **Transcript** button in the Teams meeting toolbar so the panel is visible. |
-| **"No transcript entries found"** | Run `--debug` to see the UI tree. Teams may have updated its UI structure — open an issue with the debug output. |
-| **macOS "Accessibility permission required"** | See the macOS permission step above. |
-| **Only partial transcript captured** | The script auto-scrolls, but very long transcripts (1 hr+) may take a moment. If entries are missing, try again — the scroll timing might need adjusting. |
+
+| Problem                                       | Fix                                                                                                                                                       |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **"Teams window not found"**                  | Make sure Teams is running and a meeting window is open (not just the chat/calendar).                                                                     |
+| **"Transcript panel not detected"**           | Click the **Transcript** button in the Teams meeting toolbar so the panel is visible.                                                                     |
+| **"No transcript entries found"**             | Run `--debug` to see the UI tree. Teams may have updated its UI structure — open an issue with the debug output.                                          |
+| **macOS "Accessibility permission required"** | See the macOS permission step above.                                                                                                                      |
+| **Only partial transcript captured**          | The script auto-scrolls, but very long transcripts (1 hr+) may take a moment. If entries are missing, try again — the scroll timing might need adjusting. |
+
 
 ---
+
+
 
 ## Limitations
 
@@ -165,11 +207,15 @@ what the pitch might look like...
 
 ---
 
+
+
 ## Contributing
 
 Found a bug or Teams changed its UI? Run `--debug`, capture the output, and open an issue. PRs welcome.
 
 ---
+
+
 
 ## Licence
 
