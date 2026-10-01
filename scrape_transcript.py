@@ -46,6 +46,13 @@ SPOKEN_TS_RE = re.compile(
     r"(?:(\d+)\s+hours?\s+)?(\d+)\s+minutes?(?:\s+(\d+)\s+seconds?)?"
 )
 
+# Teams for macOS duplicates a visible timestamp immediately after its spoken
+# accessibility label, e.g. "1 minute 8 seconds1:08".
+MAC_TIMESTAMP_SUFFIX_RE = re.compile(
+    r"((?:\d+\s+hours?\s+)?\d+\s+minutes?"
+    r"(?:\s+\d+\s+seconds?)?)\d{1,2}:\d{2}(?::\d{2})?$"
+)
+
 SYSTEM = platform.system()
 
 # Text fragments to ignore during extraction
@@ -97,6 +104,18 @@ def is_pure_timestamp(text: str) -> bool:
     stripped = text.strip()
     m = SPOKEN_TS_RE.match(stripped)
     return m is not None and m.end() == len(stripped)
+
+
+def parse_mac_clipboard_text(text: str) -> List[TranscriptEntry]:
+    """Parse text copied from the current Teams transcript panel on macOS."""
+    items: List[Tuple[int, str, str]] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        line = MAC_TIMESTAMP_SUFFIX_RE.sub(r"\1", line)
+        items.append((0, "AXStaticText", line))
+    return parse_tree_items(items)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -524,23 +543,29 @@ def scrape_mac(debug: bool = False) -> Tuple[List[TranscriptEntry], str]:
         _mac_dump_tree(app_ref, max_depth=DEBUG_TREE_DEPTH)
         return [], "Teams Meeting"
 
-    items = _mac_walk_tree(app_ref)
-
-    if _find_transcript_start(items) is None:
-        fail("Transcript panel not detected.\n"
-             "   Open a Teams meeting → click 'Transcript' to start or view it.")
-
-    print("📋  Transcript panel detected")
-
-    entries = parse_tree_items(items)
     title = _mac_get_window_title(app_ref) or "Teams Meeting"
-    print(f"   ⤷ {len(entries)} entries in initial view")
 
-    if entries:
-        print("📜  Attempting scroll for additional entries…")
-        more = _mac_scroll_and_collect(pid, entries)
-        if more:
-            entries = more
+    items = _mac_walk_tree(app_ref)
+    if _find_transcript_start(items) is not None:
+        print("📋  Transcript panel detected")
+        entries = parse_tree_items(items)
+        print(f"   ⤷ {len(entries)} entries in initial view")
+
+        if entries:
+            print("📜  Attempting scroll for additional entries…")
+            more = _mac_scroll_and_collect(pid, entries)
+            if more:
+                entries = more
+        return entries, title
+
+    # Current Teams for macOS renders the visible app but exposes only an
+    # empty AXWebApplication shell. Copying the focused transcript panel still
+    # yields its structured accessibility text, so use that as a fallback.
+    print("📋  Reading transcript with the macOS copy fallback…")
+    entries = _mac_copy_scroll_and_collect(pid)
+    if not entries:
+        fail("Transcript panel not detected.\n"
+             "   Open the meeting recap → click 'Transcript', then try again.")
 
     return entries, title
 
@@ -601,8 +626,195 @@ def _mac_get_window_title(app_ref) -> Optional[str]:
             if err == kAXErrorSuccess and title:
                 t = str(title)
                 if "teams" in t.lower():
-                    return t.split(" | ")[0]
+                    return _mac_clean_window_title(t)
     return None
+
+
+def _mac_clean_window_title(title: str) -> str:
+    """Extract the meeting name from current Teams for Mac window titles."""
+    parts = [part.strip() for part in title.split(" | ") if part.strip()]
+    if parts and parts[-1].lower() == "microsoft teams":
+        parts.pop()
+    if len(parts) > 1 and parts[0].lower() in {"chat", "meeting"}:
+        return parts[1]
+    return parts[0] if parts else "Teams Meeting"
+
+
+def _mac_copy_scroll_and_collect(pid: int) -> List[TranscriptEntry]:
+    """Copy and scroll the transcript when Teams hides its web AX subtree."""
+    from AppKit import (
+        NSData,
+        NSPasteboard,
+        NSPasteboardItem,
+        NSPasteboardTypeString,
+        NSWorkspace,
+    )
+    from ApplicationServices import (
+        AXUIElementCopyAttributeValue,
+        AXUIElementCreateApplication,
+        AXValueGetValue,
+        kAXErrorSuccess,
+        kAXValueCGPointType,
+        kAXValueCGSizeType,
+    )
+    from Quartz import (
+        CGEventCreateKeyboardEvent,
+        CGEventCreateMouseEvent,
+        CGEventCreateScrollWheelEvent,
+        CGEventPost,
+        CGEventSetFlags,
+        CGEventSetIntegerValueField,
+        kCGEventFlagMaskCommand,
+        kCGEventLeftMouseDown,
+        kCGEventLeftMouseUp,
+        kCGHIDEventTap,
+        kCGMouseButtonLeft,
+        kCGMouseEventClickState,
+        kCGScrollEventUnitLine,
+    )
+
+    def ax_attr(element, name):
+        err, value = AXUIElementCopyAttributeValue(element, name, None)
+        return value if err == kAXErrorSuccess else None
+
+    def post_key(key_code: int, command: bool = False):
+        for down in (True, False):
+            event = CGEventCreateKeyboardEvent(None, key_code, down)
+            if command:
+                CGEventSetFlags(event, kCGEventFlagMaskCommand)
+            CGEventPost(kCGHIDEventTap, event)
+
+    def click(x: float, y: float):
+        for event_type in (kCGEventLeftMouseDown, kCGEventLeftMouseUp):
+            event = CGEventCreateMouseEvent(
+                None, event_type, (x, y), kCGMouseButtonLeft,
+            )
+            CGEventSetIntegerValueField(event, kCGMouseEventClickState, 1)
+            CGEventPost(kCGHIDEventTap, event)
+
+    def save_pasteboard(pb):
+        saved = []
+        for item in pb.pasteboardItems() or []:
+            values = []
+            for item_type in item.types() or []:
+                data = item.dataForType_(item_type)
+                if data is not None:
+                    values.append((str(item_type), bytes(data)))
+            saved.append(values)
+        return saved
+
+    def restore_pasteboard(pb, saved):
+        items = []
+        for values in saved:
+            item = NSPasteboardItem.alloc().init()
+            for item_type, raw in values:
+                data = NSData.dataWithBytes_length_(raw, len(raw))
+                item.setData_forType_(data, item_type)
+            items.append(item)
+        pb.clearContents()
+        if items:
+            pb.writeObjects_(items)
+
+    running_app = next(
+        (app for app in NSWorkspace.sharedWorkspace().runningApplications()
+         if app.processIdentifier() == pid),
+        None,
+    )
+    if running_app is None:
+        return []
+
+    running_app.activateWithOptions_(1)
+    time.sleep(0.8)
+
+    app_ref = AXUIElementCreateApplication(pid)
+    windows = ax_attr(app_ref, "AXWindows") or []
+    if not windows:
+        return []
+
+    position_ref = ax_attr(windows[0], "AXPosition")
+    size_ref = ax_attr(windows[0], "AXSize")
+    if position_ref is None or size_ref is None:
+        return []
+    position_ok, position = AXValueGetValue(
+        position_ref, kAXValueCGPointType, None,
+    )
+    size_ok, size = AXValueGetValue(size_ref, kAXValueCGSizeType, None)
+    if not position_ok or not size_ok:
+        return []
+
+    # The recap transcript is the right-hand pane in current Teams for Mac.
+    click_x = position.x + size.width * 0.86
+    click_y = position.y + size.height * 0.66
+
+    pasteboard = NSPasteboard.generalPasteboard()
+    saved_pasteboard = save_pasteboard(pasteboard)
+    all_entries: List[TranscriptEntry] = []
+    seen: set = set()
+    stale = 0
+    transcript_seen = False
+
+    try:
+        click(click_x, click_y)
+        time.sleep(0.3)
+        # Teams ignores the Home key in this panel. Large upward wheel events
+        # reliably return its virtualised list to the first transcript entry.
+        for _ in range(20):
+            event = CGEventCreateScrollWheelEvent(
+                None, kCGScrollEventUnitLine, 1, 100,
+            )
+            CGEventPost(kCGHIDEventTap, event)
+            time.sleep(0.05)
+        time.sleep(max(SCROLL_PAUSE, 1.0))
+
+        for i in range(MAX_SCROLLS):
+            before = pasteboard.changeCount()
+            post_key(0, command=True)  # Command-A
+            time.sleep(0.2)
+            post_key(8, command=True)  # Command-C
+            for _ in range(20):
+                if pasteboard.changeCount() != before:
+                    break
+                time.sleep(0.1)
+
+            copied = pasteboard.stringForType_(NSPasteboardTypeString) or ""
+            if "transcript" in copied.lower() and "arrow keys" in copied.lower():
+                transcript_seen = True
+            batch = parse_mac_clipboard_text(copied)
+
+            new_count = 0
+            for entry in batch:
+                key = (entry.speaker, entry.timestamp, entry.text)
+                if key not in seen:
+                    seen.add(key)
+                    all_entries.append(entry)
+                    new_count += 1
+
+            if new_count == 0:
+                stale += 1
+                if stale >= STALE_SCROLL_LIMIT:
+                    break
+            else:
+                stale = 0
+
+            if i == 0 or (i + 1) % 5 == 0:
+                print(f"   ⤷ {len(all_entries)} entries so far…")
+
+            click(click_x, click_y)
+            post_key(53)  # Escape — clear the page-wide copy selection.
+            for _ in range(3):
+                event = CGEventCreateScrollWheelEvent(
+                    None, kCGScrollEventUnitLine, 1, -16,
+                )
+                CGEventPost(kCGHIDEventTap, event)
+                time.sleep(0.1)
+            time.sleep(max(SCROLL_PAUSE, 1.0))
+    finally:
+        restore_pasteboard(pasteboard, saved_pasteboard)
+
+    if not transcript_seen:
+        return []
+    all_entries.sort(key=_ts_sort_key)
+    return all_entries
 
 
 def _mac_scroll_and_collect(pid, initial_entries) -> Optional[List[TranscriptEntry]]:
