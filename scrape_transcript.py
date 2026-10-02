@@ -552,10 +552,19 @@ def scrape_mac(debug: bool = False) -> Tuple[List[TranscriptEntry], str]:
         print(f"   ⤷ {len(entries)} entries in initial view")
 
         if entries:
-            print("📜  Attempting scroll for additional entries…")
-            more = _mac_scroll_and_collect(pid, entries)
-            if more:
-                entries = more
+            # Page Down does not reliably reach the nested transcript pane in
+            # current Teams for Mac. Use the same focused wheel/copy collector
+            # as the AX-hidden fallback; it explicitly targets that pane,
+            # returns to the top, and verifies progress while scrolling.
+            print("📜  Scrolling transcript panel…")
+            complete = _mac_copy_scroll_and_collect(pid)
+            if complete:
+                entries = complete
+            else:
+                print("   ⚠ Copy collector unavailable; using AX fallback")
+                more = _mac_scroll_and_collect(pid, entries)
+                if more:
+                    entries = more
         return entries, title
 
     # Current Teams for macOS renders the visible app but exposes only an
